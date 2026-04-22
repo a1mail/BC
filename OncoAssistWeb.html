@@ -696,7 +696,68 @@
     </style>
 </head>
 <body>
-    <div id="app">
+    <div id="auth-gate" style="position:fixed;inset:0;background:#0f172a;display:flex;align-items:center;justify-content:center;z-index:9999;">
+        <div style="background:#fff;padding:24px;border-radius:8px;box-shadow:0 10px 20px rgba(0,0,0,.2);max-width:320px;width:90%;">
+            <div style="font-weight:600;margin-bottom:8px;">Вход</div>
+            <div style="font-size:12px;color:#64748b;margin-bottom:12px;">Введите пароль для доступа</div>
+            <input id="auth-pass" type="password" placeholder="Пароль" style="width:100%;padding:10px;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:8px;">
+            <label style="display:flex;align-items:center;gap:6px;margin-bottom:12px;font-size:12px;color:#475569;"><input type="checkbox" id="auth-remember"> Запомнить на этом устройстве</label>
+            <button id="auth-submit" style="width:100%;padding:10px;border:none;border-radius:6px;background:#3b82f6;color:#fff;">Войти</button>
+            <div id="auth-error" style="color:#ef4444;font-size:12px;margin-top:8px;display:none;"></div>
+        </div>
+    </div>
+    <script>
+        (async function(){
+            var gate=document.getElementById('auth-gate');
+            function getApp(){ return document.getElementById('app'); }
+            var SUBKEY='onco_login_hash';
+            var SESSIONKEY='onco_auth_ok';
+            async function sha256(s){
+                if(window.crypto&&crypto.subtle){
+                    var enc=new TextEncoder().encode(s);
+                    var buf=await crypto.subtle.digest('SHA-256',enc);
+                    return Array.from(new Uint8Array(buf)).map(function(b){return b.toString(16).padStart(2,'0')}).join('');
+                }
+                return s;
+            }
+            var DEFAULT_PASS='Onco2026';
+            var DEFAULT_HASH=await sha256(DEFAULT_PASS);
+            function getStoredHash(){return localStorage.getItem(SUBKEY)||DEFAULT_HASH}
+            function openGate(msg){
+                gate.style.display='flex';
+                var el=getApp(); if(el) el.style.display='none';
+                var err=document.getElementById('auth-error');
+                if(err){err.style.display=msg?'block':'none';err.textContent=msg||''}
+            }
+            function unlock(){
+                gate.style.display='none';
+                var el2=getApp(); if(el2) el2.style.display='';
+                sessionStorage.setItem(SESSIONKEY,'1');
+            }
+            async function verify(pw,remember){
+                var hash=await sha256(pw);
+                var stored=getStoredHash();
+                if(hash===stored){
+                    if(remember)sessionStorage.setItem(SESSIONKEY,'1');
+                    unlock();
+                }else{
+                    openGate('Неверный пароль');
+                }
+            }
+            var btn=document.getElementById('auth-submit');
+            if(btn){btn.addEventListener('click',async function(){
+                var pw=(document.getElementById('auth-pass').value||'').trim();
+                var remember=!!document.getElementById('auth-remember').checked;
+                if(!pw){openGate('Введите пароль');return}
+                await verify(pw,remember);
+            })};
+            var pwEl=document.getElementById('auth-pass');
+            if(pwEl){pwEl.addEventListener('keydown',function(e){if(e.key==='Enter'){document.getElementById('auth-submit').click()}})}
+            if(sessionStorage.getItem(SESSIONKEY)==='1'){unlock();return}
+            openGate('');
+        })();
+    </script>
+    <div id="app" style="display: none;">
         <header>
             <h1>🏥 OncoAssist Web</h1>
             <div class="header-actions">
@@ -1022,7 +1083,7 @@
                         <div class="card-content">
                             <div class="grid grid-2">
                                 <div class="form-group">
-                                    <label>Гемоглобин (г/дл)</label>
+                                    <label>Гемоглобин (мг/л)</label>
                                     <input type="number" id="diagnostics_hemoglobin" placeholder="13.5" step="0.1" onchange="app.saveState()">
                                 </div>
                                 <div class="form-group">
@@ -1591,7 +1652,7 @@
                 'openai': 'https://api.openai.com/v1',
                 'anthropic': 'https://api.anthropic.com/v1',
                 'deepseek': 'https://api.deepseek.com/v1',
-                'qwen': 'https://dashscope.aliyuncs.com/api/v1',
+                'qwen': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
                 'gigachat': 'https://gigachat.devices.sberbank.ru/api/v1',
                 'openrouter': 'https://openrouter.ai/api/v1',
                 'custom': ''
@@ -1761,6 +1822,27 @@
                 const existing = this.getServerAuthToken();
                 if (existing) return existing;
 
+                // Сначала пробуем тихий вход со стандартным паролем (если он используется)
+                const trySilent = async () => {
+                    const defaultPw = 'Onco2026';
+                    try {
+                        const resp = await fetch('/api/auth/login', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ password: defaultPw })
+                        });
+                        const body = await this.readResponseBodySafe(resp);
+                        if (resp.ok && body?.json?.token) {
+                            this.setServerAuthToken(body.json.token);
+                            return body.json.token;
+                        }
+                        return '';
+                    } catch { return ''; }
+                };
+                const silent = await trySilent();
+                if (silent) return silent;
+
+                // Если тихий вход не удался — просим пароль у пользователя
                 const password = prompt('Введите пароль для доступа к серверу OncoAssistant:', '');
                 if (!password) {
                     throw new Error('Требуется пароль');
@@ -2777,7 +2859,7 @@ ${data.anamnesis?.other_complaints ? `Другие жалобы: ${data.anamnesi
 Общее состояние: ${data.exam?.general_condition || 'не указано'}
 
 === ЛАБОРАТОРНЫЕ ДАННЫЕ ===
-Гемоглобин: ${data.diagnostics?.hemoglobin || 'не определен'} г/дл
+Гемоглобин: ${data.diagnostics?.hemoglobin || 'не определен'} мг/л
 Лейкоциты: ${data.diagnostics?.leukocytes || 'не определены'} ×10⁹/л
 Тромбоциты: ${data.diagnostics?.platelets || 'не определены'} ×10⁹/л
 БИЛ: ${data.diagnostics?.bilirubin || 'не определен'} мкмоль/л
